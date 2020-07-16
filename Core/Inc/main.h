@@ -37,7 +37,20 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+#define trigLevel ( 0xA0 )
 
+typedef enum{
+  ZeroBankNext,
+  FirstBankNext,
+  FirstBankIsLast,
+  ZeroBankIsLast,
+  BankNoMore
+} TOscState;
+/*#define ZeroBankNext ( 0 )
+#define FirstBankNext ( 1 )
+#define ZeroBankIsLast ( 2 )
+#define FirstBankIsLast ( 3 )
+#define BankNoMore ( 4 )*/
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

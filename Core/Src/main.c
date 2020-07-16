@@ -47,7 +47,7 @@ volatile bool WDfetch = false;  //отмашка от analog WD: натрави 
 #define AdcBuffSize 800//( USHRT_MAX )
 uint8_t AdcBuff[2][AdcBuffSize];
 
-uint8_t dataUART_FromPC[3];
+volatile uint8_t dataUART_FromPC[3];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -98,6 +98,9 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_ADC3_Init();
   /* USER CODE BEGIN 2 */
+
+  HAL_UART_Receive_IT(&huart3, dataUART_FromPC, 3);
+
 	if( HAL_ADC_Start(&hadc3) != HAL_OK)
 		return 0;
 	 // -- Enables ADC DMA request
@@ -110,13 +113,13 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	HAL_UART_Receive_DMA(&huart3, (uint8_t*)dataUART_FromPC, sizeof(dataUART_FromPC));
 	if (HAL_GPIO_ReadPin(USER_Btn_GPIO_Port,GPIO_PIN_13) == GPIO_PIN_SET)
 	{
 		HAL_ADC_Start_DMA(&hadc3, (uint32_t*)AdcBuff, AdcBuffSize);
 		HAL_Delay(1000);
 	}
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -259,10 +262,10 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 115200;
-  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.BaudRate = 9600;
+  huart3.Init.WordLength = UART_WORDLENGTH_9B;
   huart3.Init.StopBits = UART_STOPBITS_1;
-  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Parity = UART_PARITY_EVEN;
   huart3.Init.Mode = UART_MODE_TX_RX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
@@ -381,15 +384,26 @@ static void MX_GPIO_Init(void)
 
 }
 
+/* USER CODE BEGIN 4 */
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart){
+  uint32_t advanten_error_code = huart->ErrorCode;
+  HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+  //huart->ErrorCode = HAL_UART_ERROR_NONE;
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if(huart == &huart3)
   {
-		  __NOP();
+      if ((dataUART_FromPC[0] == '1') && (dataUART_FromPC[1] == '2') && (dataUART_FromPC[2] == '3')){
+	HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+	HAL_ADC_Start_DMA(&hadc3, (uint32_t*)AdcBuff[0], AdcBuffSize);
+      }
+      HAL_UART_Receive_IT(&huart3, dataUART_FromPC, 3);
   }
 }
 
-/* USER CODE BEGIN 4 */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
 	if(huart == &huart3){
@@ -398,34 +412,54 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 	HAL_ADC_Start_DMA(&hadc3, (uint32_t*)buffPtr, AdcBuffSize);*/
 }
 
+//trig on 0xA0 in ADC data array
+static bool LevelTrigger(uint_least8_t bank){
+  uint32_t i = 0;
+  do{
+      if (AdcBuff[bank][i] > trigLevel){
+	  return true;
+      }
+      i+=4;
+  }while(i < AdcBuffSize);
+  return false;
+}
+
 volatile uint8_t adcCode;
-volatile bool EventOccurred = false;  //всплеск от МИУ detected
+volatile bool EventOccurred = false;  //всплеск от М�?У detected
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
-	static uint_least8_t currBank = 0;  // DMA  use second array?
+    uint_least8_t currBank = 255;  // DMA  use second array?
+    static TOscState state = FirstBankNext;
     if(hadc->Instance == ADC3) //check if the interrupt comes from ACD1
     {
-       // adcCode = HAL_ADC_GetValue(&hadc3);
-			uint32_t i = 0;
-			bool transPlease = false;
-			do{
-				if (AdcBuff[currBank][i] > 0xA0){
-					transPlease = true;
-					break;
-				}
-				i+=4;
-			}while(i < AdcBuffSize);
-			if (transPlease){
-				uint8_t *buff2UART_Ptr = (uint8_t*)&AdcBuff[currBank];  //трансмитим по юарт карент банк
-				currBank = (currBank == 0) ? 1 : 0;
-				uint8_t *buff2ADC_Ptr = (uint8_t*)&AdcBuff[currBank];  //ADC райтит в некст банк
-				HAL_ADC_Start_DMA(&hadc3, (uint32_t*)buff2ADC_Ptr, AdcBuffSize);
-				HAL_UART_Transmit_DMA(&huart3, buff2UART_Ptr, AdcBuffSize);
-			}else{
-				currBank = 0;
-				uint8_t *buff2ADC_Ptr = (uint8_t*)&AdcBuff[currBank];
-				HAL_ADC_Start_DMA(&hadc3, (uint32_t*)buff2ADC_Ptr, AdcBuffSize);
-			}
-			configASSERT(currBank<=1);
+        //adcCode = HAL_ADC_GetValue(&hadc3);
+
+	if(state == FirstBankNext){
+	  currBank = 0;
+	  uint8_t *buff2ADC_Ptr = (uint8_t*)&AdcBuff[1];  //ADC write в 1й банк
+	  HAL_ADC_Start_DMA(&hadc3, (uint32_t*)buff2ADC_Ptr, AdcBuffSize);
+	  if (LevelTrigger(currBank)){
+	    uint8_t *buff2UART_Ptr = (uint8_t*)&AdcBuff[0];  //трансмитим по юарт 0й банк
+	    HAL_UART_Transmit_DMA(&huart3, buff2UART_Ptr, AdcBuffSize);
+	    state = FirstBankIsLast;
+	  }else  state = ZeroBankNext;
+	}else if(state == ZeroBankNext){
+	  currBank = 1;
+	  uint8_t *buff2ADC_Ptr = (uint8_t*)&AdcBuff[0];  //ADC write в 0й банк
+	  HAL_ADC_Start_DMA(&hadc3, (uint32_t*)buff2ADC_Ptr, AdcBuffSize);
+	  if (LevelTrigger(currBank)){
+	    uint8_t *buff2UART_Ptr = (uint8_t*)&AdcBuff[1];  //трансмитим по юарт 1й банк
+	    HAL_UART_Transmit_DMA(&huart3, buff2UART_Ptr, AdcBuffSize);
+	    state = ZeroBankIsLast;
+	  }else state = FirstBankNext;
+	}else  if(state == FirstBankIsLast){
+	    uint8_t *buff2UART_Ptr = (uint8_t*)&AdcBuff[1];  //трансмитим по юарт 1й банк
+	    HAL_UART_Transmit_DMA(&huart3, buff2UART_Ptr, AdcBuffSize);
+	    state = ZeroBankNext;//BankNoMore;
+	}else  if(state == ZeroBankIsLast){
+	    uint8_t *buff2UART_Ptr = (uint8_t*)&AdcBuff[0];  //трансмитим по юарт 0й банк
+	    HAL_UART_Transmit_DMA(&huart3, buff2UART_Ptr, AdcBuffSize);
+	    state = ZeroBankNext;//BankNoMore;
+	}
     }
 	/*HAL_ADC_Stop(&hadc3);
 	CDC_Transmit_FS(AdcBuff, AdcBuffSize);*/
